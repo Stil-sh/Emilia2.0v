@@ -1,127 +1,201 @@
 import logging
+import asyncio
 from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from config import BOT_TOKEN, ADMIN_ID
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.contrib.fsm_storage.redis import RedisStorage2
+from aiocache import cached, RedisCache
+from asyncpg import create_pool
 import aiohttp
-import sqlite3
+from config import BOT_TOKEN, DB_CONFIG, REDIS_CONFIG
 
 # Настройка логов
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+# Инициализация
+bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
+storage = RedisStorage2(**REDIS_CONFIG)
+dp = Dispatcher(bot, storage=storage)
 
-# База данных
-conn = sqlite3.connect('bot.db')
-cursor = conn.cursor()
+# Глобальные объекты
+pool = None
+http_session = None
 
-# Создаем таблицы
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    nsfw_enabled BOOLEAN DEFAULT FALSE
-)
-''')
-conn.commit()
+# Класс для работы с БД
+class Database:
+    @staticmethod
+    async def get_user(user_id: int):
+        async with pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM users WHERE user_id = $1", user_id
+            )
 
-# Жанры
-SFW_GENRES = ["waifu", "neko", "shinobu", "megumin"]
-NSFW_GENRES = ["waifu", "neko", "trap"]
+    @staticmethod
+    async def add_to_favorites(user_id: int, image_url: str):
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO favorites (user_id, image_url) VALUES ($1, $2)",
+                user_id, image_url
+            )
 
-# Клавиатура
-def get_keyboard(user_id):
-    cursor.execute('SELECT nsfw_enabled FROM users WHERE user_id = ?', (user_id,))
-    nsfw_enabled = cursor.fetchone()
-    nsfw_enabled = nsfw_enabled[0] if nsfw_enabled else False
-    
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    
-    # Добавляем SFW или NSFW жанры
-    genres = NSFW_GENRES if nsfw_enabled else SFW_GENRES
-    for genre in genres:
-        keyboard.insert(KeyboardButton(genre.capitalize()))
-    
-    # Кнопки управления
-    keyboard.row(
-        KeyboardButton("🔞 NSFW" if not nsfw_enabled else "🚫 SFW"),
-        KeyboardButton("⭐ Избранное")
-    )
-    return keyboard
+# Кэшированные методы
+class CachedMethods:
+    @staticmethod
+    @cached(ttl=300, cache=RedisCache, key_builder=lambda f, *args: f"user:{args[0]}")
+    async def get_user_cached(user_id: int):
+        return await Database.get_user(user_id)
 
-# Получение изображения
-async def get_image(genre, nsfw=False):
-    api_type = "nsfw" if nsfw else "sfw"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://api.waifu.pics/{api_type}/{genre}",
-                timeout=5
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('url')
-                logger.error(f"API error: {response.status}")
-    except Exception as e:
-        logger.error(f"Connection error: {e}")
-    return None
+    @staticmethod
+    @cached(ttl=1800, cache=RedisCache)
+    async def get_waifu_image(genre: str, nsfw: bool = False):
+        try:
+            category = 'nsfw' if nsfw else 'sfw'
+            async with http_session.get(
+                f"https://api.waifu.pics/{category}/{genre}",
+                timeout=3
+            ) as resp:
+                data = await resp.json()
+                return data['url']
+        except Exception as e:
+            logger.error(f"API Error: {e}")
+            return None
 
-# Обработчики
+# Генераторы клавиатур
+class Keyboards:
+    @staticmethod
+    async def main_menu(user_id: int):
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        
+        # Основные жанры
+        genres = ["waifu", "neko", "shinobu", "megumin"]
+        for genre in genres:
+            keyboard.insert(InlineKeyboardButton(
+                genre.capitalize(),
+                callback_data=f"genre_{genre}"
+            ))
+        
+        # Дополнительные кнопки
+        user = await CachedMethods.get_user_cached(user_id)
+        nsrw_btn = InlineKeyboardButton(
+            "🔞 Выключить NSFW" if user.get('nsfw_enabled') else "🔞 Включить NSFW",
+            callback_data="toggle_nsfw"
+        )
+        
+        keyboard.row(nsrw_btn)
+        keyboard.row(
+            InlineKeyboardButton("⭐ Избранное", callback_data="favorites"),
+            InlineKeyboardButton("📊 Статистика", callback_data="stats")
+        )
+        
+        return keyboard
+
+# Обработчики команд
 @dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
-    conn.commit()
-    await message.answer("Выбери жанр:", reply_markup=get_keyboard(user_id))
+async def cmd_start(message: types.Message):
+    user = await CachedMethods.get_user_cached(message.from_user.id)
+    if not user:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (user_id, username) VALUES ($1, $2)",
+                message.from_user.id, message.from_user.username
+            )
+    
+    await message.answer(
+        f"👋 Добро пожаловать, {message.from_user.first_name}!\n"
+        "Выберите жанр:",
+        reply_markup=await Keyboards.main_menu(message.from_user.id)
+    )
 
-@dp.message_handler(lambda message: message.text.lower() in [g.lower() for g in SFW_GENRES + NSFW_GENRES])
-async def send_image(message: types.Message):
-    user_id = message.from_user.id
-    genre = message.text.lower()
+@dp.callback_query_handler(lambda c: c.data.startswith('genre_'))
+async def process_genre(call: types.CallbackQuery):
+    user = await CachedMethods.get_user_cached(call.from_user.id)
+    genre = call.data.split('_')[1]
     
-    cursor.execute('SELECT nsfw_enabled FROM users WHERE user_id = ?', (user_id,))
-    nsfw_enabled = cursor.fetchone()[0]
-    
-    # Проверяем, разрешен ли выбранный жанр в текущем режиме
-    available_genres = NSFW_GENRES if nsfw_enabled else SFW_GENRES
-    if genre not in available_genres:
-        await message.answer("Этот жанр недоступен в текущем режиме")
-        return
-    
-    image_url = await get_image(genre, nsfw_enabled)
+    image_url = await CachedMethods.get_waifu_image(
+        genre, 
+        user.get('nsfw_enabled', False)
+    )
     
     if image_url:
-        try:
-            if image_url.endswith('.gif'):
-                await bot.send_animation(message.chat.id, image_url, 
-                                       reply_markup=get_keyboard(user_id))
-            else:
-                await bot.send_photo(message.chat.id, image_url,
-                                   reply_markup=get_keyboard(user_id))
-        except Exception as e:
-            logger.error(f"Send media error: {e}")
-            await message.answer("Ошибка отправки изображения")
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(
+            "⭐ В избранное", 
+            callback_data=f"fav_{image_url}"
+        ))
+        
+        await bot.send_photo(
+            call.from_user.id,
+            image_url,
+            reply_markup=kb
+        )
     else:
-        await message.answer("Не удалось загрузить изображение")
+        await call.answer("⚠️ Ошибка загрузки", show_alert=True)
 
-@dp.message_handler(lambda message: message.text in ["🔞 NSFW", "🚫 SFW"])
-async def toggle_nsfw(message: types.Message):
-    user_id = message.from_user.id
-    cursor.execute('SELECT nsfw_enabled FROM users WHERE user_id = ?', (user_id,))
-    current = cursor.fetchone()[0]
-    
-    new_value = not current
-    cursor.execute('UPDATE users SET nsfw_enabled = ? WHERE user_id = ?', 
-                 (new_value, user_id))
-    conn.commit()
-    
-    await message.answer(f"NSFW режим {'включен' if new_value else 'выключен'}!", 
-                       reply_markup=get_keyboard(user_id))
+# Админ-команды
+@dp.message_handler(commands=['admin'])
+async def cmd_admin(message: types.Message):
+    user = await CachedMethods.get_user_cached(message.from_user.id)
+    if user.get('is_admin'):
+        await message.answer(
+            "⚙️ Админ-панель:",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Статистика", callback_data="admin_stats"),
+                InlineKeyboardButton("Рассылка", callback_data="admin_broadcast")
+            )
+        )
 
-@dp.message_handler(lambda message: message.text == "⭐ Избранное")
-async def show_favorites(message: types.Message):
-    await message.answer("Функция избранного будет реализована позже", 
-                       reply_markup=get_keyboard(message.from_user.id))
+# Инициализация
+async def on_startup(dp):
+    global pool, http_session
+    
+    # Инициализация подключений
+    pool = await create_pool(**DB_CONFIG)
+    http_session = aiohttp.ClientSession()
+    
+    # Создание таблиц
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                nsfw_enabled BOOLEAN DEFAULT FALSE,
+                is_admin BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                image_url TEXT,
+                saved_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+    
+    logger.info("Бот успешно запущен")
+
+async def on_shutdown(dp):
+    await pool.close()
+    await http_session.close()
+    logger.info("Бот остановлен")
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(
+        dp,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True
+    )
+    await http_session.close()
+    logger.info("Бот остановлен")
+
+if __name__ == '__main__':
+    executor.start_polling(
+        dp,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True
+    )
