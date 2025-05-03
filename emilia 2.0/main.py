@@ -35,14 +35,12 @@ def get_keyboard(nsfw_enabled=False):
     return keyboard
 
 # Получение арта
-async def get_art(genre):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://nekos.best/api/v2/{genre}") as response:
-                data = await response.json()
-                return data["results"][0]["url"]
-    except:
-        return None
+async def get_art(genre, nsfw=False):
+    url = "https://api.waifu.pics/" + ("nsfw" if nsfw else "sfw") + f"/{genre}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            return data["url"]
 
 # Команда /start
 @dp.message_handler(commands=['start'])
