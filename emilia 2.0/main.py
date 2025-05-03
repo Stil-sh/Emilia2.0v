@@ -2,11 +2,10 @@ import logging
 import asyncio
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.contrib.fsm_storage.redis import RedisStorage2
-from aiocache import cached, RedisCache
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from asyncpg import create_pool
 import aiohttp
-from config import BOT_TOKEN, DB_CONFIG, REDIS_CONFIG
+from config import BOT_TOKEN, DB_CONFIG
 
 # Настройка логов
 logging.basicConfig(
@@ -18,10 +17,11 @@ logger = logging.getLogger(__name__)
 class AnimeBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
-        self.storage = RedisStorage2(**REDIS_CONFIG)
+        self.storage = MemoryStorage()
         self.dp = Dispatcher(self.bot, storage=self.storage)
         self.pool = None
         self.http_session = None
+        self.cache = {}  # Простой in-memory кэш вместо Redis
 
     async def init_db(self):
         self.pool = await create_pool(**DB_CONFIG)
@@ -44,13 +44,26 @@ class AnimeBot:
                 )
             """)
 
-    @cached(ttl=300, cache=RedisCache, key_builder=lambda f, *args: f"user:{args[0]}")
-    async def get_user_cached(self, user_id: int):
+    async def get_user(self, user_id: int):
+        # Проверяем кэш перед запросом к БД
+        if user_id in self.cache.get('users', {}):
+            return self.cache['users'][user_id]
+        
         async with self.pool.acquire() as conn:
-            return await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+            user = await conn.fetchrow(
+                "SELECT * FROM users WHERE user_id = $1", user_id
+            )
+            if user:
+                if 'users' not in self.cache:
+                    self.cache['users'] = {}
+                self.cache['users'][user_id] = user
+            return user
 
-    @cached(ttl=1800, cache=RedisCache)
     async def get_waifu_image(self, genre: str, nsfw: bool = False):
+        cache_key = f"image_{genre}_{nsfw}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        
         try:
             category = 'nsfw' if nsfw else 'sfw'
             async with self.http_session.get(
@@ -58,6 +71,7 @@ class AnimeBot:
                 timeout=3
             ) as resp:
                 data = await resp.json()
+                self.cache[cache_key] = data['url']  # Кэшируем результат
                 return data['url']
         except Exception as e:
             logger.error(f"API Error: {e}")
@@ -73,13 +87,11 @@ class AnimeBot:
                 callback_data=f"genre_{genre}"
             ))
         
-        user = await self.get_user_cached(user_id)
-        nsrw_btn = InlineKeyboardButton(
-            "🔞 Выключить NSFW" if user.get('nsfw_enabled') else "🔞 Включить NSFW",
-            callback_data="toggle_nsfw"
-        )
+        user = await self.get_user(user_id)
+        if user:
+            nsrw_text = "🔞 Выключить NSFW" if user['nsfw_enabled'] else "🔞 Включить NSFW"
+            keyboard.row(InlineKeyboardButton(nsrw_text, callback_data="toggle_nsfw"))
         
-        keyboard.row(nsrw_btn)
         keyboard.row(
             InlineKeyboardButton("⭐ Избранное", callback_data="favorites"),
             InlineKeyboardButton("📊 Статистика", callback_data="stats")
@@ -100,7 +112,7 @@ class AnimeBot:
     def register_handlers(self):
         @self.dp.message_handler(commands=['start'])
         async def cmd_start(message: types.Message):
-            user = await self.get_user_cached(message.from_user.id)
+            user = await self.get_user(message.from_user.id)
             if not user:
                 async with self.pool.acquire() as conn:
                     await conn.execute(
@@ -116,12 +128,12 @@ class AnimeBot:
 
         @self.dp.callback_query_handler(lambda c: c.data.startswith('genre_'))
         async def process_genre(call: types.CallbackQuery):
-            user = await self.get_user_cached(call.from_user.id)
+            user = await self.get_user(call.from_user.id)
             genre = call.data.split('_')[1]
             
             image_url = await self.get_waifu_image(
                 genre, 
-                user.get('nsfw_enabled', False)
+                user.get('nsfw_enabled', False) if user else False
             )
             
             if image_url:
@@ -138,6 +150,22 @@ class AnimeBot:
                 )
             else:
                 await call.answer("⚠️ Ошибка загрузки", show_alert=True)
+
+        @self.dp.callback_query_handler(lambda c: c.data == 'toggle_nsfw')
+        async def toggle_nsfw(call: types.CallbackQuery):
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET nsfw_enabled = NOT nsfw_enabled WHERE user_id = $1",
+                    call.from_user.id
+                )
+                # Очищаем кэш пользователя
+                if 'users' in self.cache and call.from_user.id in self.cache['users']:
+                    del self.cache['users'][call.from_user.id]
+            
+            await call.message.edit_reply_markup(
+                reply_markup=await self.main_menu(call.from_user.id)
+            )
+            await call.answer("Настройки NSFW обновлены")
 
     def run(self):
         self.register_handlers()
