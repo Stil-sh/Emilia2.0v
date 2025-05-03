@@ -1,17 +1,14 @@
-BOT_TOKEN = ""7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk""
+# Правильный формат (используйте ОДИНАРНЫЕ кавычки для значения)
+BOT_TOKEN = "7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk"
 
-# Настройки PostgreSQL
+# Или так (можно и двойные, но без дублирования)
+# BOT_TOKEN = '7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk'
+
+# Настройки PostgreSQL для Railway
 DB_CONFIG = {
-    "user": "user",
-    "password": "password",
-    "database": "dbname",
-    "host": "localhost",
-    "port": 5432
-}
-
-# Настройки Redis
-REDIS_CONFIG = {
-    "host": "localhost",
-    "port": 6379,
-    "db": 0
+    "user": "postgres",
+    "password": "ваш_пароль",
+    "database": "railway",
+    "host": "containers-us-west-100.railway.app",
+    "port": "6532"  # Укажите ваш порт из настроек Railway
 }
