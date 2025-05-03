@@ -22,6 +22,7 @@ class AnimeBot:
         self.genres = ["Waifu", "Neko", "Shinobu", "Megumin"]
         self.nsfw_enabled = False
         self.session = None
+        self.nsfw_allowed = ["waifu", "neko"]  # Какие жанры поддерживают NSFW
 
     async def on_startup(self, dp):
         self.session = aiohttp.ClientSession()
@@ -37,22 +38,31 @@ class AnimeBot:
             keyboard.add(KeyboardButton(genre))
         nsfw_text = "🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
         keyboard.add(KeyboardButton(nsfw_text))
+        keyboard.add(KeyboardButton("🔄 Обновить меню"))
         return keyboard
 
     async def get_waifu_image(self, genre: str):
         try:
+            # Проверяем, поддерживается ли NSFW для этого жанра
+            if self.nsfw_enabled and genre.lower() not in self.nsfw_allowed:
+                return None
+                
             category = 'nsfw' if self.nsfw_enabled else 'sfw'
             url = f"https://api.waifu.pics/{category}/{genre.lower()}"
             
             async with self.session.get(url, timeout=5) as response:
                 if response.status != 200:
-                    raise NetworkError(f"API error: {response.status}")
+                    logger.error(f"API вернул статус {response.status}")
+                    return None
                 
                 data = await response.json()
                 return data['url']
                 
+        except asyncio.TimeoutError:
+            logger.error("Таймаут запроса к API")
+            return None
         except Exception as e:
-            logger.error(f"API request failed: {e}")
+            logger.error(f"Ошибка API: {str(e)}")
             return None
 
     def register_handlers(self):
@@ -64,38 +74,45 @@ class AnimeBot:
                     reply_markup=self.get_main_menu()
                 )
             except Exception as e:
-                logger.error(f"Start error: {e}")
+                logger.error(f"Ошибка в /start: {str(e)}")
 
-        @self.dp.message_handler(lambda m: m.text in self.genres or "NSFW" in m.text)
-        async def handle_buttons(message: types.Message):
+        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить меню")
+        async def refresh_menu(message: types.Message):
+            await cmd_start(message)
+
+        @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
+        async def toggle_nsfw(message: types.Message):
+            self.nsfw_enabled = not self.nsfw_enabled
+            status = "включен" if self.nsfw_enabled else "выключен"
+            await message.answer(
+                f"NSFW режим {status}",
+                reply_markup=self.get_main_menu()
+            )
+            logger.info(f"NSFW режим {status} пользователем {message.from_user.id}")
+
+        @self.dp.message_handler(lambda m: m.text in self.genres)
+        async def handle_genre(message: types.Message):
             try:
-                if "NSFW" in message.text:
-                    self.nsfw_enabled = not self.nsfw_enabled
-                    await message.answer(
-                        f"NSFW режим {'включен' if self.nsfw_enabled else 'выключен'}",
-                        reply_markup=self.get_main_menu()
-                    )
-                    return
-
                 genre = message.text.lower()
                 image_url = await self.get_waifu_image(genre)
                 
                 if not image_url:
-                    await message.answer("⚠️ Не удалось загрузить изображение")
+                    error_msg = "⚠️ Этот жанр не поддерживает NSFW" if self.nsfw_enabled else "⚠️ Не удалось загрузить изображение"
+                    await message.answer(error_msg)
                     return
                 
                 await message.answer_photo(
                     image_url,
-                    caption=f"Ваш {genre} арт!",
+                    caption=f"Ваш {genre} арт! (NSFW: {'да' if self.nsfw_enabled else 'нет'})",
                     reply_markup=self.get_main_menu()
                 )
                 
             except RetryAfter as e:
                 await asyncio.sleep(e.timeout)
-                await handle_buttons(message)
+                await handle_genre(message)
             except Exception as e:
-                logger.error(f"Button handler error: {e}")
-                await message.answer("⚠️ Произошла ошибка")
+                logger.error(f"Ошибка обработки жанра: {str(e)}")
+                await message.answer("⚠️ Произошла ошибка при загрузке")
 
     def run(self):
         self.register_handlers()
