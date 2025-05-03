@@ -7,8 +7,8 @@ BOT_TOKEN = "7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk"
 # Настройки PostgreSQL для Railway
 DB_CONFIG = {
     "user": "postgres",
-    "password": "ваш_пароль",
+    "password": "MNwCUAjoGdUWxFFdTKIRvqSshcFQOMJO",
     "database": "railway",
-    "host": "containers-us-west-100.railway.app",
-    "port": "6532"  # Укажите ваш порт из настроек Railway
+    "host": "postgres.railway.internal",
+    "port": "5432"  # Укажите ваш порт из настроек Railway
 }
