@@ -1,6 +1,6 @@
 import logging
 from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from config import BOT_TOKEN, ADMIN_ID
 import aiohttp
 import sqlite3
@@ -26,18 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
 conn.commit()
 
 # Жанры
-SFW_GENRES = {
-    "waifu": "Девушки",
-    "neko": "Неко",
-    "shinobu": "Шинобу",
-    "megumin": "Мегумин"
-}
-
-NSFW_GENRES = {
-    "waifu": "Девушки (18+)",
-    "neko": "Неко (18+)",
-    "trap": "Трапы (18+)"
-}
+SFW_GENRES = ["waifu", "neko", "shinobu", "megumin"]
+NSFW_GENRES = ["waifu", "neko", "trap"]
 
 # Клавиатура
 def get_keyboard(user_id):
@@ -45,18 +35,17 @@ def get_keyboard(user_id):
     nsfw_enabled = cursor.fetchone()
     nsfw_enabled = nsfw_enabled[0] if nsfw_enabled else False
     
-    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
     # Добавляем SFW или NSFW жанры
     genres = NSFW_GENRES if nsfw_enabled else SFW_GENRES
-    for genre, label in genres.items():
-        keyboard.insert(InlineKeyboardButton(label, callback_data=f"genre_{genre}"))
+    for genre in genres:
+        keyboard.insert(KeyboardButton(genre.capitalize()))
     
     # Кнопки управления
     keyboard.row(
-        InlineKeyboardButton("🔞 NSFW" if not nsfw_enabled else "🚫 SFW", 
-                          callback_data="toggle_nsfw"),
-        InlineKeyboardButton("⭐ Избранное", callback_data="favorites")
+        KeyboardButton("🔞 NSFW" if not nsfw_enabled else "🚫 SFW"),
+        KeyboardButton("⭐ Избранное")
     )
     return keyboard
 
@@ -85,33 +74,39 @@ async def start(message: types.Message):
     conn.commit()
     await message.answer("Выбери жанр:", reply_markup=get_keyboard(user_id))
 
-@dp.callback_query_handler(lambda call: call.data.startswith('genre_'))
-async def send_image(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    genre = call.data.split('_')[1]
+@dp.message_handler(lambda message: message.text.lower() in [g.lower() for g in SFW_GENRES + NSFW_GENRES])
+async def send_image(message: types.Message):
+    user_id = message.from_user.id
+    genre = message.text.lower()
     
     cursor.execute('SELECT nsfw_enabled FROM users WHERE user_id = ?', (user_id,))
     nsfw_enabled = cursor.fetchone()[0]
+    
+    # Проверяем, разрешен ли выбранный жанр в текущем режиме
+    available_genres = NSFW_GENRES if nsfw_enabled else SFW_GENRES
+    if genre not in available_genres:
+        await message.answer("Этот жанр недоступен в текущем режиме")
+        return
     
     image_url = await get_image(genre, nsfw_enabled)
     
     if image_url:
         try:
             if image_url.endswith('.gif'):
-                await bot.send_animation(call.from_user.id, image_url, 
+                await bot.send_animation(message.chat.id, image_url, 
                                        reply_markup=get_keyboard(user_id))
             else:
-                await bot.send_photo(call.from_user.id, image_url,
+                await bot.send_photo(message.chat.id, image_url,
                                    reply_markup=get_keyboard(user_id))
         except Exception as e:
             logger.error(f"Send media error: {e}")
-            await call.answer("Ошибка отправки изображения", show_alert=True)
+            await message.answer("Ошибка отправки изображения")
     else:
-        await call.answer("Не удалось загрузить изображение", show_alert=True)
+        await message.answer("Не удалось загрузить изображение")
 
-@dp.callback_query_handler(lambda call: call.data == 'toggle_nsfw')
-async def toggle_nsfw(call: types.CallbackQuery):
-    user_id = call.from_user.id
+@dp.message_handler(lambda message: message.text in ["🔞 NSFW", "🚫 SFW"])
+async def toggle_nsfw(message: types.Message):
+    user_id = message.from_user.id
     cursor.execute('SELECT nsfw_enabled FROM users WHERE user_id = ?', (user_id,))
     current = cursor.fetchone()[0]
     
@@ -120,12 +115,13 @@ async def toggle_nsfw(call: types.CallbackQuery):
                  (new_value, user_id))
     conn.commit()
     
-    await call.answer(f"NSFW режим {'включен' if new_value else 'выключен'}!")
-    await bot.edit_message_reply_markup(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=get_keyboard(user_id)
-    )
+    await message.answer(f"NSFW режим {'включен' if new_value else 'выключен'}!", 
+                       reply_markup=get_keyboard(user_id))
+
+@dp.message_handler(lambda message: message.text == "⭐ Избранное")
+async def show_favorites(message: types.Message):
+    await message.answer("Функция избранного будет реализована позже", 
+                       reply_markup=get_keyboard(message.from_user.id))
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
