@@ -19,10 +19,10 @@ class AnimeBot:
         self.bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
         self.storage = MemoryStorage()
         self.dp = Dispatcher(self.bot, storage=self.storage)
-        self.genres = ["Waifu", "Neko", "Shinobu", "Megumin"]
+        self.sfw_genres = ["waifu", "neko", "shinobu", "megumin"]
+        self.nsfw_genres = ["waifu", "neko", "trap"]  # Реально работающие NSFW-жанры на waifu.pics
         self.nsfw_enabled = False
         self.session = None
-        self.nsfw_allowed = ["waifu", "neko"]  # Какие жанры поддерживают NSFW
 
     async def on_startup(self, dp):
         self.session = aiohttp.ClientSession()
@@ -34,8 +34,12 @@ class AnimeBot:
 
     def get_main_menu(self):
         keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        for genre in self.genres:
-            keyboard.add(KeyboardButton(genre))
+        
+        # Показываем разные жанры в зависимости от режима
+        genres_to_show = self.nsfw_genres if self.nsfw_enabled else self.sfw_genres
+        for genre in genres_to_show:
+            keyboard.add(KeyboardButton(genre.capitalize()))
+            
         nsfw_text = "🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
         keyboard.add(KeyboardButton(nsfw_text))
         keyboard.add(KeyboardButton("🔄 Обновить меню"))
@@ -43,10 +47,6 @@ class AnimeBot:
 
     async def get_waifu_image(self, genre: str):
         try:
-            # Проверяем, поддерживается ли NSFW для этого жанра
-            if self.nsfw_enabled and genre.lower() not in self.nsfw_allowed:
-                return None
-                
             category = 'nsfw' if self.nsfw_enabled else 'sfw'
             url = f"https://api.waifu.pics/{category}/{genre.lower()}"
             
@@ -85,20 +85,25 @@ class AnimeBot:
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
             await message.answer(
-                f"NSFW режим {status}",
+                f"NSFW режим {status}. Доступные жанры обновлены.",
                 reply_markup=self.get_main_menu()
             )
             logger.info(f"NSFW режим {status} пользователем {message.from_user.id}")
 
-        @self.dp.message_handler(lambda m: m.text in self.genres)
+        @self.dp.message_handler()
         async def handle_genre(message: types.Message):
             try:
+                current_genres = self.nsfw_genres if self.nsfw_enabled else self.sfw_genres
                 genre = message.text.lower()
+                
+                if genre not in [g.lower() for g in current_genres]:
+                    await message.answer("⚠️ Пожалуйста, выберите жанр из меню")
+                    return
+                
                 image_url = await self.get_waifu_image(genre)
                 
                 if not image_url:
-                    error_msg = "⚠️ Этот жанр не поддерживает NSFW" if self.nsfw_enabled else "⚠️ Не удалось загрузить изображение"
-                    await message.answer(error_msg)
+                    await message.answer("⚠️ Не удалось загрузить изображение")
                     return
                 
                 await message.answer_photo(
