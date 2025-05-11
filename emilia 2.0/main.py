@@ -70,7 +70,7 @@ class AnimeBot:
         async def cmd_start(message: types.Message):
             try:
                 await message.answer(
-                    "🎌 Добро пожаловать в аниме-бот!\nВыберите жанр:",
+                    "🎌 Добро пожаловать в Эмилию!\nВыберите жанр:",
                     reply_markup=self.get_main_menu()
                 )
             except Exception as e:
@@ -80,7 +80,7 @@ class AnimeBot:
         async def refresh_menu(message: types.Message):
             await cmd_start(message)
 
-        @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
+        @self.dp.message_handler(lambda m: m.text in ["🔞 CUMon, "🔞 CUMoff"])
         async def toggle_nsfw(message: types.Message):
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
