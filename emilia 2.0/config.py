@@ -2,10 +2,6 @@ BOT_TOKEN = "7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk"
 CHANNEL_ID = "@Emilia_debag"
 CHANNEL_LINK = "https://t.me/Emilia_debag"
 
-BOT_TOKEN = "ВАШ_ТОКЕН"
-CHANNEL_ID = "@ВАШ_КАНАЛ"
-CHANNEL_LINK = "https://t.me/ВАШ_КАНАЛ"
-
 USER_CATEGORIES = {
     "Безопасный контент 🔒": {
         "Подкатегории": {
