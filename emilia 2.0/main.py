@@ -40,7 +40,7 @@ class AnimeBot:
         for genre in genres_to_show:
             keyboard.add(KeyboardButton(genre.capitalize()))
             
-        nsfw_text = "🔞 CUMon" if self.nsfw_enabled else "🔞 CumOff"
+        nsfw_text = "🔞 Включть NSFW" if self.nsfw_enabled else "🔞 Выключить HSFW"
         keyboard.add(KeyboardButton(nsfw_text))
         keyboard.add(KeyboardButton("🔄 Обновить меню"))
         return keyboard
@@ -80,7 +80,7 @@ class AnimeBot:
         async def refresh_menu(message: types.Message):
             await cmd_start(message)
 
-        @self.dp.message_handler(lambda m: m.text in ["🔞 CUMon, "🔞 CUMoff"])
+        @self.dp.message_handler(lambda m: m.text in ["🔞 Включть NSFW, "🔞 Выключить NSFW"])
         async def toggle_nsfw(message: types.Message):
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
