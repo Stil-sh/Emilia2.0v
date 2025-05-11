@@ -2,16 +2,40 @@ import logging
 import aiohttp
 import json
 import random
+import sys
+import os
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import exceptions
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN, CHANNEL_ID, CHANNEL_LINK, USER_CATEGORIES, SCROLLLER_MAPPING
 
+# Настройка логгирования
 logging.basicConfig(
-    level=logging.DEBUG,  # Включен режим отладки
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
+
+class InstanceLocker:
+    """Класс для предотвращения множественных запусков"""
+    def __init__(self):
+        self.lock_file = "bot.lock"
+        self.lock = None
+
+    def __enter__(self):
+        if os.path.exists(self.lock_file):
+            logger.error("Бот уже запущен! Удалите файл bot.lock если уверены что бот не работает")
+            sys.exit(1)
+        open(self.lock_file, 'w').close()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if os.path.exists(self.lock_file):
+            os.remove(self.lock_file)
 
 class SubscriptionManager:
     def __init__(self, bot):
@@ -55,7 +79,7 @@ class ScrolllerAPI:
         }
 
     async def fetch_content(self, subreddit: str):
-        """Полностью переработанный метод с повторными попытками"""
+        """Улучшенный метод с повторными попытками"""
         query = {
             "query": """query SubredditQuery($url: String!) {
                 getSubreddit(url: $url) {
@@ -74,53 +98,50 @@ class ScrolllerAPI:
             "variables": {"url": f"/r/{subreddit}"}
         }
 
-        try:
-            logger.debug(f"Отправка запроса для: {subreddit}")
-            async with self.session.post(
-                "https://api.scrolller.com/api/v2/graphql",
-                json=query,
-                headers=self.headers,
-                timeout=10
-            ) as response:
-                
-                if response.status != 200:
-                    logger.error(f"Ошибка API: {response.status}")
-                    return None
-                
-                raw_data = await response.text()
-                logger.debug(f"Сырой ответ API: {raw_data[:500]}...")  # Логируем часть ответа
-                
-                data = json.loads(raw_data)
-                return self.parse_content(data, subreddit)
-                
-        except Exception as e:
-            logger.error(f"Ошибка Scrolller: {str(e)}")
-            return None
+        for attempt in range(3):
+            try:
+                logger.info(f"Попытка {attempt+1} для {subreddit}")
+                async with self.session.post(
+                    "https://api.scrolller.com/api/v2/graphql",
+                    json=query,
+                    headers=self.headers,
+                    timeout=10
+                ) as response:
+                    
+                    if response.status != 200:
+                        logger.error(f"Ошибка API: {response.status}")
+                        continue
+                    
+                    raw_data = await response.text()
+                    data = json.loads(raw_data)
+                    content = self.parse_content(data, subreddit)
+                    
+                    if content: 
+                        return content
+                        
+            except Exception as e:
+                logger.error(f"Ошибка Scrolller: {str(e)}")
+        
+        return None
 
     def parse_content(self, data: dict, subreddit: str) -> list:
-        """Улучшенный парсинг с резервными вариантами"""
+        """Улучшенный парсинг с резервными методами"""
         try:
             items = data.get('data', {}).get('getSubreddit', {}).get('children', {}).get('items', [])
-            if not items:
-                logger.warning(f"Пустой ответ для: {subreddit}")
-                return []
-
             valid_posts = []
+            
             for item in items:
                 try:
-                    # Основной парсинг
+                    # Основной метод получения медиа
                     media = [
                         m['url'] for m in item.get('mediaSources', [])
-                        if m.get('type') in ['IMAGE', 'GIF', 'VIDEO']
-                        and any(ext in m['url'].lower() for ext in [
-                            '.jpg', '.jpeg', '.png', '.gif', 
-                            '.mp4', '.webm', 'i.redd.it', 'i.imgur.com'
-                        ])
+                        if m.get('type') in ['IMAGE', 'GIF']
+                        and any(ext in m['url'].lower() for ext in ['.jpg', '.jpeg', '.png', '.gif'])
                     ]
                     
-                    # Резервный парсинг для некорректных ответов
+                    # Резервный метод если основной не сработал
                     if not media:
-                        media = [item.get('url')] if 'i.redd.it' in item.get('url', '') else []
+                        media = [item.get('url')] if any(x in item.get('url', '') for x in ['i.redd.it', 'imgur.com']) else []
                     
                     if media:
                         valid_posts.append({
@@ -158,51 +179,44 @@ class AnimeBot:
         return markup
 
     async def send_content(self, message: types.Message, subreddit: str):
-        """Улучшенный метод с 3 попытками"""
-        if not await self.sub_manager.check_subscription(message.from_user.id):
-            await self.sub_manager.request_subscription(message)
-            return
-
-        loading_msg = await message.answer("🔄 Ищем лучший контент...")
-        
+        """Улучшенная отправка контента с обработкой всех исключений"""
         try:
-            for attempt in range(3):
-                content = await self.scrolller.fetch_content(subreddit)
-                if content:
-                    break
-                logger.warning(f"Попытка {attempt+1} неудачна")
+            if not await self.sub_manager.check_subscription(message.from_user.id):
+                await self.sub_manager.request_subscription(message)
+                return
+
+            loading_msg = await message.answer("🔄 Ищем лучший контент...")
+            content = await self.scrolller.fetch_content(subreddit)
             
             if not content:
                 await loading_msg.edit_text(
-                    "😔 Не удалось найти контент\n\n"
-                    "Возможные причины:\n"
-                    "1. Субреддит временно недоступен\n"
-                    "2. Нет подходящих медиа-файлов\n"
-                    "3. Ошибка API\n\n"
-                    "Попробуйте другую категорию или напишите в поддержку"
+                    "😔 Не удалось найти контент\n"
+                    "Попробуйте другую подкатегорию или обратитесь в поддержку"
                 )
                 return
 
             post = random.choice(content)
-            media_url = post['media'][0] if post['media'] else post['url']
-            
-            try:
-                await message.answer_photo(
-                    photo=media_url,
-                    caption=f"🎴 {post['title']}\n🔗 {post['url']}",
-                    reply_markup=self.generate_menu()
-                )
-            except exceptions.WrongFileIdentifier:
-                await message.answer(
-                    f"📨 Не удалось отправить медиа\n"
-                    f"Ссылка: {post['url']}"
-                )
-            
+            if not post.get('media'):
+                raise ValueError("Пост не содержит медиа")
+
+            await message.answer_photo(
+                photo=post['media'][0],
+                caption=f"🎴 {post['title']}\n🔗 {post['url']}",
+                reply_markup=self.generate_menu()
+            )
             await loading_msg.delete()
             
+        except exceptions.RetryAfter as e:
+            await asyncio.sleep(e.timeout)
+            await self.send_content(message, subreddit)
+            
+        except exceptions.TelegramAPIError as e:
+            logger.error(f"Ошибка Telegram API: {str(e)}")
+            await loading_msg.edit_text("⚠ Ошибка отправки, попробуйте позже")
+            
         except Exception as e:
-            logger.error(f"Финальная ошибка: {str(e)}")
-            await loading_msg.edit_text("⚠ Критическая ошибка, попробуйте позже")
+            logger.error(f"Общая ошибка: {str(e)}")
+            await loading_msg.edit_text("⚠ Произошла непредвиденная ошибка")
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
@@ -252,6 +266,12 @@ class AnimeBot:
             await callback.message.edit_text("🏮 Выберите категорию:", reply_markup=self.generate_menu())
 
 if __name__ == '__main__':
-    bot = AnimeBot()
-    bot.register_handlers()
-    executor.start_polling(bot.dp, on_shutdown=bot.shutdown, skip_updates=True)
+    with InstanceLocker():
+        bot = AnimeBot()
+        bot.register_handlers()
+        executor.start_polling(
+            bot.dp,
+            on_shutdown=bot.shutdown,
+            skip_updates=True,
+            timeout=60
+        )
