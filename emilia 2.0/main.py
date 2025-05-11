@@ -40,7 +40,7 @@ class AnimeBot:
         for genre in genres_to_show:
             keyboard.add(KeyboardButton(genre.capitalize()))
             
-        nsfw_text = "🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
+        nsfw_text = "🔞 CUMon" if self.nsfw_enabled else "🔞 CumOff"
         keyboard.add(KeyboardButton(nsfw_text))
         keyboard.add(KeyboardButton("🔄 Обновить меню"))
         return keyboard
