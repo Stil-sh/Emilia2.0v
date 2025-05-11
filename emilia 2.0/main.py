@@ -1,9 +1,8 @@
 import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.dispatcher import Dispatcher
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import (ChatNotFound, BadRequest, 
-                                   TelegramAPIError, Unauthorized)
+from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 from config import BOT_TOKEN, CHANNEL_ID, CHANNEL_LINK
 
 # Настройка логгирования
@@ -29,25 +28,20 @@ class SubscriptionChecker:
             self.cache[user_id] = result
             return result
             
-        except BadRequest as e:
+        except TelegramBadRequest as e:
             if "bot is not a member" in str(e).lower():
                 logger.error("Бот не является участником канала!")
             return True
-        except ChatNotFound:
-            logger.error("Канал не найден!")
-            return True
-        except Unauthorized:
-            logger.error("Бот заблокирован пользователем")
-            return False
         except TelegramAPIError as e:
             logger.error(f"Ошибка API: {e}")
             return True
 
     async def send_subscription_request(self, message: types.Message):
         """Отправка сообщения с просьбой подписаться"""
-        keyboard = InlineKeyboardMarkup()
-        keyboard.row(InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK))
-        keyboard.row(InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")]
+        ])
         
         await message.answer(
             "📛 Для доступа к боту подпишитесь на наш канал!\n"
@@ -59,7 +53,7 @@ class SubscriptionChecker:
 class AnimeBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
-        self.dp = Dispatcher()
+        self.dp = Dispatcher(bot=self.bot)  # Исправлено: передаем бота в Dispatcher
         self.sub_checker = SubscriptionChecker(self.bot)
         self.sfw_genres = ["waifu", "neko", "shinobu", "megumin"]
         self.nsfw_genres = ["waifu", "neko", "trap"]
@@ -72,20 +66,23 @@ class AnimeBot:
         logger.info("Бот остановлен")
 
     def get_main_menu(self):
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        genres = self.nsfw_genres if self.nsfw_enabled else self.sfw_genres
-        
-        for genre in genres:
-            keyboard.add(types.KeyboardButton(genre.capitalize()))
-            
-        nsfw_text = "🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
-        keyboard.add(types.KeyboardButton(nsfw_text))
-        keyboard.add(types.KeyboardButton("🔄 Обновить"))
-        
+        keyboard = types.ReplyKeyboardMarkup(
+            keyboard=[
+                [types.KeyboardButton(text=genre.capitalize()) for genre in 
+                 (self.nsfw_genres if self.nsfw_enabled else self.sfw_genres)],
+                [
+                    types.KeyboardButton(
+                        text="🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
+                    ),
+                    types.KeyboardButton(text="🔄 Обновить")
+                ]
+            ],
+            resize_keyboard=True
+        )
         return keyboard
 
     def register_handlers(self):
-        @self.dp.message(commands=['start', 'menu'])
+        @self.dp.message(Command("start", "menu"))
         async def cmd_start(message: types.Message):
             if not await self.sub_checker.check_subscription(message.from_user.id):
                 await self.sub_checker.send_subscription_request(message)
@@ -97,17 +94,19 @@ class AnimeBot:
             )
 
         @self.dp.callback_query(lambda c: c.data == "check_sub")
-        async def check_sub_callback(call: types.CallbackQuery):
-            if await self.sub_checker.check_subscription(call.from_user.id):
-                await call.message.delete()
-                await call.message.answer(
+        async def check_sub_callback(callback: types.CallbackQuery):
+            if await self.sub_checker.check_subscription(callback.from_user.id):
+                await callback.message.delete()
+                await callback.message.answer(
                     "✅ Спасибо за подписку! Теперь вы можете использовать бота.",
                     reply_markup=self.get_main_menu()
                 )
             else:
-                await call.answer("❌ Вы ещё не подписались!", show_alert=True)
+                await callback.answer("❌ Вы ещё не подписались!", show_alert=True)
 
-        @self.dp.message(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
+        @self.dp.message(
+            lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"]
+        )
         async def toggle_nsfw(message: types.Message):
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
