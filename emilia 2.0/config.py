@@ -45,3 +45,34 @@ SCROLLLER_MAPPING = {
     "yaoi": "yaoi",
     "HentaiHardcore": "HentaiHardcore"
 }
+
+
+BOT_TOKEN = "ВАШ_ТОКЕН"
+CHANNEL_ID = "@ВАШ_КАНАЛ"
+CHANNEL_LINK = "https://t.me/ВАШ_КАНАЛ"
+
+USER_CATEGORIES = {
+    "Безопасный контент 🔒": {
+        "Подкатегории": {
+            "Миловидные персонажи 🐾": ["awwnime", "Moescape"],
+            "Обои для рабочего стола 🖼️": ["AnimeWallpaper"]
+        },
+        "nsfw": False
+    },
+    "Взрослый контент 🔞": {
+        "Подкатегории": {
+            "Соблазнительные образы 💄": ["animelegs", "animearmpits"],
+            "Эротические арты 🍑": ["AnimeBooty"]
+        },
+        "nsfw": True
+    }
+}
+
+SCROLLLER_MAPPING = {
+    "awwnime": "awwnime",
+    "Moescape": "Moescape",
+    "AnimeWallpaper": "AnimeWallpaper",
+    "animelegs": "animelegs", 
+    "animearmpits": "animearmpits",
+    "AnimeBooty": "AnimeBooty"
+}
