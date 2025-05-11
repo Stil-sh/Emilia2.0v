@@ -14,17 +14,59 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class SubscriptionChecker:
+    def __init__(self, bot):
+        self.bot = bot
+        self.cache = {}
+
+    async def check_subscription(self, user_id: int) -> bool:
+        """Проверка подписки пользователя на канал"""
+        try:
+            member = await self.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            return member.status not in ['left', 'kicked']
+        except exceptions.BadRequest as e:
+            logger.error(f"Ошибка проверки подписки: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка: {e}")
+            return False
+
+    async def send_subscription_request(self, message: types.Message):
+        """Отправка сообщения с просьбой подписаться"""
+        keyboard = InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            InlineKeyboardButton("👉 ПОДПИСАТЬСЯ 👈", url=CHANNEL_LINK),
+            InlineKeyboardButton("✅ Я ПОДПИСАЛСЯ", callback_data="check_sub")
+        )
+        
+        await message.answer(
+            "🔒 <b>Доступ ограничен</b>\n\n"
+            "Для использования бота необходимо подписаться на наш канал:\n"
+            f"{CHANNEL_LINK}\n\n"
+            "После подписки нажмите кнопку <b>✅ Я ПОДПИСАЛСЯ</b>",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
 class ScrolllerAPI:
     def __init__(self):
+        self.session = None
+
+    async def init_session(self):
+        """Инициализация сессии при запуске"""
         self.session = aiohttp.ClientSession()
-        self.base_url = "https://api.scrolller.com/api/v2/graphql"
-        self.headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+
+    async def close_session(self):
+        """Закрытие сессии при остановке"""
+        if self.session:
+            await self.session.close()
 
     async def get_images(self, subreddit: str, nsfw: bool = False, count: int = 1):
         """Получение изображений из субреддита на Scrolller"""
+        if not self.session:
+            await self.init_session()
+
         query = {
             "query": """
                 query SubredditQuery(
@@ -59,8 +101,11 @@ class ScrolllerAPI:
 
         try:
             async with self.session.post(
-                self.base_url,
-                headers=self.headers,
+                "https://api.scrolller.com/api/v2/graphql",
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                },
                 data=json.dumps(query)
             ) as response:
                 if response.status != 200:
@@ -90,17 +135,26 @@ class AnimeBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.dp = Dispatcher(self.bot)
+        self.sub_checker = SubscriptionChecker(self.bot)
         self.scrolller = ScrolllerAPI()
         self.sfw_subreddits = ["awwnime", "animewallpaper", "moescape"]
         self.nsfw_subreddits = ["animelegs", "animelegwear", "animearmpits"]
         self.nsfw_enabled = False
 
     async def on_startup(self, dispatcher):
+        await self.scrolller.init_session()
         logger.info("Бот запущен")
 
     async def on_shutdown(self, dispatcher):
-        await self.scrolller.session.close()
+        await self.scrolller.close_session()
         logger.info("Бот остановлен")
+
+    async def is_subscribed(self, message: types.Message) -> bool:
+        """Проверка подписки с отправкой запроса если не подписан"""
+        if not await self.sub_checker.check_subscription(message.from_user.id):
+            await self.sub_checker.send_subscription_request(message)
+            return False
+        return True
 
     def get_main_menu(self):
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -117,6 +171,9 @@ class AnimeBot:
 
     async def send_random_image(self, message: types.Message, subreddit: str):
         """Отправка случайного изображения из субреддита"""
+        if not await self.is_subscribed(message):
+            return
+            
         loading_msg = await message.answer("🔄 Загружаю изображение с Scrolller...")
         
         images = await self.scrolller.get_images(
@@ -149,10 +206,14 @@ class AnimeBot:
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
         async def cmd_start(message: types.Message):
+            if not await self.is_subscribed(message):
+                return
+                
             await message.answer(
-                "🎌 Добро пожаловать в аниме бот!\n"
+                "🎌 <b>Добро пожаловать в аниме бот!</b>\n"
                 "👇 Выберите категорию из меню:",
-                reply_markup=self.get_main_menu()
+                reply_markup=self.get_main_menu(),
+                parse_mode="HTML"
             )
 
         # Обработчики для SFW субреддитов
@@ -177,6 +238,9 @@ class AnimeBot:
 
         @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
         async def toggle_nsfw(message: types.Message):
+            if not await self.is_subscribed(message):
+                return
+                
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
             await message.answer(
@@ -187,6 +251,23 @@ class AnimeBot:
         @self.dp.message_handler(lambda m: m.text == "🔄 Обновить")
         async def refresh_menu(message: types.Message):
             await cmd_start(message)
+
+        @self.dp.callback_query_handler(text="check_sub")
+        async def check_sub_callback(call: types.CallbackQuery):
+            if await self.sub_checker.check_subscription(call.from_user.id):
+                await call.message.delete()
+                await call.message.answer(
+                    "✅ <b>Подписка подтверждена!</b>\n"
+                    "Теперь вы можете использовать бота.",
+                    reply_markup=self.get_main_menu(),
+                    parse_mode="HTML"
+                )
+            else:
+                await call.answer(
+                    "❌ Вы не подписаны на канал!\n"
+                    "Пожалуйста, подпишитесь и нажмите кнопку снова.",
+                    show_alert=True
+                )
 
     def run(self):
         self.register_handlers()
