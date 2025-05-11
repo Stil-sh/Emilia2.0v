@@ -28,7 +28,7 @@ class SubscriptionManager:
             self.sub_cache[user_id] = result
             return result
         except exceptions.BadRequest as e:
-            logger.error(f"Ошибка проверки подписки: {e}")
+            logger.error(f"Subscription check error: {e}")
             return False
 
     async def request_subscription(self, message: types.Message):
@@ -38,7 +38,7 @@ class SubscriptionManager:
             InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")
         )
         await message.answer(
-            "🔒 Для доступа подпишитесь на канал:\n"
+            "🔒 Для доступа к контенту необходимо подписаться на наш канал:\n"
             f"{CHANNEL_LINK}\n\n"
             "После подписки нажмите кнопку проверки",
             reply_markup=markup,
@@ -48,20 +48,26 @@ class SubscriptionManager:
 class ScrolllerAPI:
     def __init__(self):
         self.session = aiohttp.ClientSession()
-
-    async def close(self):
-        await self.session.close()
+        self.headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
 
     async def fetch_content(self, subreddit: str):
+        """Улучшенный метод получения контента"""
         query = {
             "query": """query SubredditQuery($url: String!) {
                 getSubreddit(url: $url) {
-                    children(limit: 15) {
+                    children(limit: 20, iterator: null) {
                         items {
-                            mediaSources { url }
+                            mediaSources {
+                                url
+                                type
+                            }
                             title
                             url
                         }
+                        iterator
                     }
                 }
             }""",
@@ -72,25 +78,42 @@ class ScrolllerAPI:
             async with self.session.post(
                 "https://api.scrolller.com/api/v2/graphql",
                 json=query,
-                headers={"Content-Type": "application/json"}
+                headers=self.headers
             ) as response:
                 if response.status != 200:
+                    logger.error(f"API Error: {response.status}")
                     return None
-                return await self.parse_response(await response.json())
+                
+                data = await response.json()
+                return self.parse_content(data)
+                
         except Exception as e:
-            logger.error(f"Ошибка Scrolller: {e}")
+            logger.error(f"Scrolller error: {str(e)}")
             return None
 
-    @staticmethod
-    def parse_response(data: dict) -> list:
-        items = data.get('data', {}).get('getSubreddit', {}).get('children', {}).get('items', [])
-        return [
-            {
-                "media": [m['url'] for m in item.get('mediaSources', [])],
-                "title": item.get('title', ''),
-                "url": item.get('url', '')
-            } for item in items if item.get('mediaSources')
-        ]
+    def parse_content(self, data: dict) -> list:
+        """Улучшенный парсинг контента"""
+        try:
+            items = data['data']['getSubreddit']['children']['items']
+            valid_posts = []
+            
+            for item in items:
+                media = [
+                    m['url'] for m in item['mediaSources'] 
+                    if m['type'] in ['IMAGE', 'GIF'] 
+                    and any(ext in m['url'] for ext in ['.jpg', '.jpeg', '.png', '.gif'])
+                ]
+                if media:
+                    valid_posts.append({
+                        'title': item.get('title', 'Без названия'),
+                        'media': media,
+                        'url': item.get('url', '')
+                    })
+            return valid_posts
+            
+        except KeyError as e:
+            logger.error(f"Parsing error: {str(e)}")
+            return []
 
 class AnimeBot:
     def __init__(self):
@@ -100,7 +123,7 @@ class AnimeBot:
         self.scrolller = ScrolllerAPI()
 
     async def shutdown(self, _):
-        await self.scrolller.close()
+        await self.scrolller.session.close()
         logger.info("Бот остановлен")
 
     def generate_menu(self):
@@ -110,29 +133,33 @@ class AnimeBot:
             markup.add(InlineKeyboardButton(btn_text, callback_data=f"cat_{category}"))
         return markup
 
-    async def send_content(self, message: types.Message, subreddit: str, nsfw: bool):
+    async def send_content(self, message: types.Message, subreddit: str):
+        """Улучшенная отправка контента"""
         if not await self.sub_manager.check_subscription(message.from_user.id):
             await self.sub_manager.request_subscription(message)
             return
 
-        loading_msg = await message.answer("🔄 Загрузка...")
+        loading_msg = await message.answer("🔄 Поиск контента...")
         content = await self.scrolller.fetch_content(subreddit)
         
         if not content:
-            await loading_msg.edit_text("⚠ Контент не найден")
+            await loading_msg.edit_text("😢 Контент не найден\nПопробуйте другую категорию")
             return
 
         try:
             post = random.choice(content)
+            media = post['media'][0]
+            
             await message.answer_photo(
-                photo=post['media'][0],
+                photo=media,
                 caption=f"🎴 {post['title']}\n🔗 {post['url']}",
                 reply_markup=self.generate_menu()
             )
             await loading_msg.delete()
+            
         except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
-            await loading_msg.edit_text("⚠ Ошибка загрузки")
+            logger.error(f"Content send error: {str(e)}")
+            await loading_msg.edit_text("⚠ Ошибка загрузки контента")
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
@@ -167,19 +194,15 @@ class AnimeBot:
         @self.dp.callback_query_handler(lambda c: c.data.startswith('sub_'))
         async def handle_subcategory(callback: types.CallbackQuery):
             subreddit = callback.data[4:]
-            for category in USER_CATEGORIES.values():
-                if any(subreddit in sub_list for sub_list in category["Подкатегории"].values()):
-                    await self.send_content(callback.message, subreddit, category["nsfw"])
-                    return
-            await callback.answer("⚠ Ошибка подкатегории!")
+            await self.send_content(callback.message, subreddit)
 
         @self.dp.callback_query_handler(text="check_sub")
         async def check_sub(callback: types.CallbackQuery):
             if await self.sub_manager.check_subscription(callback.from_user.id):
                 await callback.message.delete()
-                await callback.message.answer("✅ Доступ открыт!", reply_markup=self.generate_menu())
+                await callback.message.answer("✅ Доступ разрешен!", reply_markup=self.generate_menu())
             else:
-                await callback.answer("❌ Вы не подписаны!", show_alert=True)
+                await callback.answer("❌ Подписка не обнаружена!", show_alert=True)
 
         @self.dp.callback_query_handler(text="back_main")
         async def back_main(callback: types.CallbackQuery):
