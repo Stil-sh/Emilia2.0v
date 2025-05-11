@@ -1,4 +1,5 @@
 import logging
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.dispatcher import filters
 from aiogram.utils import exceptions
@@ -63,11 +64,13 @@ class AnimeBot:
         self.sfw_genres = ["waifu", "neko", "shinobu", "megumin"]
         self.nsfw_genres = ["waifu", "neko", "trap"]
         self.nsfw_enabled = False
+        self.session = aiohttp.ClientSession()
 
     async def on_startup(self, dispatcher):
         logger.info("Бот запущен")
 
     async def on_shutdown(self, dispatcher):
+        await self.session.close()
         logger.info("Бот остановлен")
 
     def get_main_menu(self):
@@ -82,6 +85,24 @@ class AnimeBot:
         keyboard.add(types.KeyboardButton("🔄 Обновить"))
         
         return keyboard
+
+    async def get_waifu_image(self, genre: str):
+        """Получение изображения от waifu.pics API"""
+        try:
+            category = 'nsfw' if self.nsfw_enabled else 'sfw'
+            url = f"https://api.waifu.pics/{category}/{genre}"
+            
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"API вернул статус {response.status}")
+                    return None
+                
+                data = await response.json()
+                return data.get('url')
+                
+        except Exception as e:
+            logger.error(f"Ошибка при получении изображения: {e}")
+            return None
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
@@ -132,8 +153,24 @@ class AnimeBot:
                 await message.answer("⚠ Выберите жанр из меню")
                 return
                 
-            await message.answer("🔄 Загружаю изображение...")
-            # Здесь должна быть логика загрузки изображения
+            # Удаляем сообщение "Загружаю изображение..." после загрузки
+            sent_message = await message.answer("🔄 Загружаю изображение...")
+            
+            image_url = await self.get_waifu_image(genre)
+            
+            if image_url:
+                try:
+                    await message.answer_photo(
+                        image_url,
+                        caption=f"Ваш {genre} арт! (NSFW: {'да' if self.nsfw_enabled else 'нет'})",
+                        reply_markup=self.get_main_menu()
+                    )
+                    await sent_message.delete()
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке изображения: {e}")
+                    await message.answer("⚠ Не удалось загрузить изображение")
+            else:
+                await message.answer("⚠ Произошла ошибка при загрузке изображения")
 
     def run(self):
         self.register_handlers()
