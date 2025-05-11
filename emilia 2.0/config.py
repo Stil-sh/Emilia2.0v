@@ -12,3 +12,5 @@ DB_CONFIG = {
     "host": "postgres.railway.internal",
     "port": "5432"  # Укажите ваш порт из настроек Railway
 }
+CHANNEL_ID = "@klondike_stil"  # Например: "@anime_channel"
+ADMIN_ID = 7062072067  # Ваш ID в Telegram
