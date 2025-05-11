@@ -54,11 +54,11 @@ class ScrolllerAPI:
         }
 
     async def fetch_content(self, subreddit: str):
-        """Улучшенный метод получения контента"""
+        """Улучшенный метод с логированием запросов"""
         query = {
             "query": """query SubredditQuery($url: String!) {
                 getSubreddit(url: $url) {
-                    children(limit: 20, iterator: null) {
+                    children(limit: 25, iterator: null) {
                         items {
                             mediaSources {
                                 url
@@ -75,6 +75,7 @@ class ScrolllerAPI:
         }
 
         try:
+            logger.info(f"Запрос к API для субреддита: {subreddit}")
             async with self.session.post(
                 "https://api.scrolller.com/api/v2/graphql",
                 json=query,
@@ -84,7 +85,9 @@ class ScrolllerAPI:
                     logger.error(f"API Error: {response.status}")
                     return None
                 
-                data = await response.json()
+                raw_data = await response.text()
+                logger.debug(f"Raw API response: {raw_data}")
+                data = json.loads(raw_data)
                 return self.parse_content(data)
                 
         except Exception as e:
@@ -92,27 +95,36 @@ class ScrolllerAPI:
             return None
 
     def parse_content(self, data: dict) -> list:
-        """Улучшенный парсинг контента"""
+        """Детальный парсинг с проверкой структуры"""
         try:
+            if not data.get('data', {}).get('getSubreddit'):
+                logger.error("Некорректная структура ответа API")
+                return []
+
             items = data['data']['getSubreddit']['children']['items']
             valid_posts = []
             
             for item in items:
-                media = [
-                    m['url'] for m in item['mediaSources'] 
-                    if m['type'] in ['IMAGE', 'GIF'] 
-                    and any(ext in m['url'] for ext in ['.jpg', '.jpeg', '.png', '.gif'])
-                ]
-                if media:
-                    valid_posts.append({
-                        'title': item.get('title', 'Без названия'),
-                        'media': media,
-                        'url': item.get('url', '')
-                    })
+                try:
+                    media_list = [
+                        m['url'] for m in item['mediaSources']
+                        if m['type'] in ['IMAGE', 'GIF']
+                        and any(ext in m['url'].lower() for ext in ['.jpg', '.jpeg', '.png', '.gif'])
+                    ]
+                    if media_list:
+                        valid_posts.append({
+                            'title': item.get('title', 'Без названия'),
+                            'media': media_list,
+                            'url': item.get('url', '')
+                        })
+                except KeyError as e:
+                    logger.warning(f"Пропущен пост из-за ошибки: {str(e)}")
+            
+            logger.info(f"Найдено {len(valid_posts)} валидных постов")
             return valid_posts
             
-        except KeyError as e:
-            logger.error(f"Parsing error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Critical parsing error: {str(e)}")
             return []
 
 class AnimeBot:
@@ -134,19 +146,25 @@ class AnimeBot:
         return markup
 
     async def send_content(self, message: types.Message, subreddit: str):
-        """Улучшенная отправка контента"""
+        """Улучшенная обработка контента с повтором"""
         if not await self.sub_manager.check_subscription(message.from_user.id):
             await self.sub_manager.request_subscription(message)
             return
 
         loading_msg = await message.answer("🔄 Поиск контента...")
-        content = await self.scrolller.fetch_content(subreddit)
         
-        if not content:
-            await loading_msg.edit_text("😢 Контент не найден\nПопробуйте другую категорию")
-            return
-
         try:
+            content = await self.scrolller.fetch_content(subreddit)
+            if not content:
+                await loading_msg.edit_text(
+                    "😢 В этой категории пока нет контента\n"
+                    "Попробуйте:\n"
+                    "1. Выбрать другую подкатегорию\n"
+                    "2. Проверить название субреддита\n"
+                    "3. Попробовать позже"
+                )
+                return
+
             post = random.choice(content)
             media = post['media'][0]
             
@@ -159,7 +177,7 @@ class AnimeBot:
             
         except Exception as e:
             logger.error(f"Content send error: {str(e)}")
-            await loading_msg.edit_text("⚠ Ошибка загрузки контента")
+            await loading_msg.edit_text("⚠ Произошла непредвиденная ошибка")
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
@@ -208,6 +226,10 @@ class AnimeBot:
         async def back_main(callback: types.CallbackQuery):
             await callback.message.edit_text("🏮 Выберите категорию:", reply_markup=self.generate_menu())
 
+if __name__ == '__main__':
+    bot = AnimeBot()
+    bot.register_handlers()
+    executor.start_polling(bot.dp, on_shutdown=bot.shutdown, skip_updates=True)
 if __name__ == '__main__':
     bot = AnimeBot()
     bot.register_handlers()
