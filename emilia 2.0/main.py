@@ -49,198 +49,106 @@ class SubscriptionChecker:
             disable_web_page_preview=True
         )
 
-class ScrolllerAPI:
+class ImageLoader:
     def __init__(self):
         self.session = None
 
     async def init_session(self):
-        """Инициализация сессии при запуске"""
+        """Инициализация сессии"""
         self.session = aiohttp.ClientSession()
 
     async def close_session(self):
-        """Закрытие сессии при остановке"""
+        """Закрытие сессии"""
         if self.session:
             await self.session.close()
 
-    async def get_images(self, subreddit: str, nsfw: bool = False, count: int = 1):
-        """Получение изображений из субреддита на Scrolller"""
-        if not self.session:
-            await self.init_session()
-
-        query = {
-            "query": """
-                query SubredditQuery(
-                    $url: String!
-                    $filter: SubredditPostFilter
-                    $iterator: String
-                ) {
-                    getSubreddit(url: $url) {
-                        children(
-                            limit: %d
-                            filter: $filter
-                            iterator: $iterator
-                        ) {
-                            items {
-                                mediaSources {
-                                    url
-                                }
-                                title
-                                url
-                            }
-                        }
-                    }
-                }
-            """ % count,
-            "variables": {
-                "url": f"/r/{subreddit}",
-                "filter": {
-                    "nsfw": nsfw
-                }
-            }
-        }
-
+    async def get_waifu_image(self, category: str):
+        """Получение случайного изображения от waifu.pics"""
         try:
-            async with self.session.post(
-                "https://api.scrolller.com/api/v2/graphql",
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                },
-                data=json.dumps(query)
-            ) as response:
-                if response.status != 200:
-                    logger.error(f"Scrolller API error: {response.status}")
-                    return None
-
-                data = await response.json()
-                posts = data.get('data', {}).get('getSubreddit', {}).get('children', {}).get('items', [])
-                
-                images = []
-                for post in posts:
-                    if post.get('mediaSources'):
-                        for media in post['mediaSources']:
-                            if media['url'].endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                                images.append({
-                                    'url': media['url'],
-                                    'title': post.get('title', ''),
-                                    'post_url': post.get('url', '')
-                                })
-                return images
-
+            async with self.session.get(f"https://api.waifu.pics/{category}/waifu") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('url')
         except Exception as e:
-            logger.error(f"Error fetching from Scrolller: {e}")
-            return None
+            logger.error(f"Ошибка при получении изображения: {e}")
+        return None
 
 class AnimeBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.dp = Dispatcher(self.bot)
         self.sub_checker = SubscriptionChecker(self.bot)
-        self.scrolller = ScrolllerAPI()
-        self.sfw_subreddits = ["awwnime", "animewallpaper", "moescape"]
-        self.nsfw_subreddits = ["animelegs", "animelegwear", "animearmpits"]
+        self.image_loader = ImageLoader()
         self.nsfw_enabled = False
 
     async def on_startup(self, dispatcher):
-        await self.scrolller.init_session()
+        await self.image_loader.init_session()
         logger.info("Бот запущен")
 
     async def on_shutdown(self, dispatcher):
-        await self.scrolller.close_session()
+        await self.image_loader.close_session()
         logger.info("Бот остановлен")
 
     async def is_subscribed(self, message: types.Message) -> bool:
-        """Проверка подписки с отправкой запроса если не подписан"""
+        """Проверка подписки"""
         if not await self.sub_checker.check_subscription(message.from_user.id):
             await self.sub_checker.send_subscription_request(message)
             return False
         return True
 
     def get_main_menu(self):
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-        
-        subreddits = self.nsfw_subreddits if self.nsfw_enabled else self.sfw_subreddits
-        for sub in subreddits:
-            keyboard.add(types.KeyboardButton(f"/{sub}"))
-            
-        nsfw_text = "🔞 Выключить NSFW" if self.nsfw_enabled else "🔞 Включить NSFW"
-        keyboard.add(types.KeyboardButton(nsfw_text))
-        keyboard.add(types.KeyboardButton("🔄 Обновить"))
-        
+        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        buttons = [
+            "🎲 Случайное изображение",
+            "🔞 Включить NSFW" if not self.nsfw_enabled else "🔞 Выключить NSFW",
+            "🔄 Обновить меню"
+        ]
+        keyboard.add(*buttons)
         return keyboard
 
-    async def send_random_image(self, message: types.Message, subreddit: str):
-        """Отправка случайного изображения из субреддита"""
-        if not await self.is_subscribed(message):
-            return
-            
-        loading_msg = await message.answer("🔄 Загружаю изображение с Scrolller...")
+    async def send_random_image(self, message: types.Message):
+        """Отправка случайного изображения"""
+        loading_msg = await message.answer("🔄 Загружаю изображение...")
         
-        images = await self.scrolller.get_images(
-            subreddit=subreddit,
-            nsfw=self.nsfw_enabled,
-            count=5
-        )
+        category = "nsfw" if self.nsfw_enabled else "sfw"
+        image_url = await self.image_loader.get_waifu_image(category)
         
-        if not images:
-            await loading_msg.edit_text("⚠ Не удалось загрузить изображения")
-            return
-
-        image = images[0]  # Берем первое изображение из списка
-        
-        try:
-            await self.bot.send_photo(
-                chat_id=message.chat.id,
-                photo=image['url'],
-                caption=f"🎨 {image.get('title', '')}\n"
-                       f"🔗 [Источник]({image.get('post_url', '')})\n"
-                       f"🔞 NSFW: {'Да' if self.nsfw_enabled else 'Нет'}",
-                parse_mode="Markdown",
-                reply_markup=self.get_main_menu()
-            )
-            await loading_msg.delete()
-        except Exception as e:
-            logger.error(f"Error sending image: {e}")
-            await loading_msg.edit_text("⚠ Ошибка при отправке изображения")
+        if image_url:
+            try:
+                await message.answer_photo(
+                    photo=image_url,
+                    caption=f"Случайное аниме изображение\n"
+                           f"🔞 NSFW: {'Да' if self.nsfw_enabled else 'Нет'}",
+                    reply_markup=self.get_main_menu()
+                )
+                await loading_msg.delete()
+            except Exception as e:
+                logger.error(f"Ошибка отправки изображения: {e}")
+                await loading_msg.edit_text("⚠ Ошибка при отправке изображения")
+        else:
+            await loading_msg.edit_text("⚠ Не удалось загрузить изображение")
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
         async def cmd_start(message: types.Message):
             if not await self.is_subscribed(message):
                 return
-                
             await message.answer(
-                "🎌 <b>Добро пожаловать в аниме бот!</b>\n"
-                "👇 Выберите категорию из меню:",
-                reply_markup=self.get_main_menu(),
-                parse_mode="HTML"
+                "🎌 Добро пожаловать в аниме бот!\n"
+                "👇 Выберите действие:",
+                reply_markup=self.get_main_menu()
             )
 
-        # Обработчики для SFW субреддитов
-        for sub in self.sfw_subreddits:
-            @self.dp.message_handler(commands=[sub])
-            async def handle_sfw_sub(message: types.Message):
-                if self.nsfw_enabled:
-                    await message.answer("⚠ Сначала отключите NSFW режим!")
-                    return
-                subreddit = message.text[1:]  # Убираем / из команды
-                await self.send_random_image(message, subreddit)
-
-        # Обработчики для NSFW субреддитов
-        for sub in self.nsfw_subreddits:
-            @self.dp.message_handler(commands=[sub])
-            async def handle_nsfw_sub(message: types.Message):
-                if not self.nsfw_enabled:
-                    await message.answer("⚠ Сначала включите NSFW режим!")
-                    return
-                subreddit = message.text[1:]  # Убираем / из команды
-                await self.send_random_image(message, subreddit)
+        @self.dp.message_handler(lambda m: m.text == "🎲 Случайное изображение")
+        async def random_image_handler(message: types.Message):
+            if not await self.is_subscribed(message):
+                return
+            await self.send_random_image(message)
 
         @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
         async def toggle_nsfw(message: types.Message):
             if not await self.is_subscribed(message):
                 return
-                
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
             await message.answer(
@@ -248,7 +156,7 @@ class AnimeBot:
                 reply_markup=self.get_main_menu()
             )
 
-        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить")
+        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить меню")
         async def refresh_menu(message: types.Message):
             await cmd_start(message)
 
@@ -264,8 +172,7 @@ class AnimeBot:
                 )
             else:
                 await call.answer(
-                    "❌ Вы не подписаны на канал!\n"
-                    "Пожалуйста, подпишитесь и нажмите кнопку снова.",
+                    "❌ Вы не подписаны на канал!",
                     show_alert=True
                 )
 
