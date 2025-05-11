@@ -1,7 +1,7 @@
 # Правильный формат (используйте ОДИНАРНЫЕ кавычки для значения)
 BOT_TOKEN = "7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk"
-CHANNEL_ID = "@klondike_stil"  # Или числовой ID канала
-CHANNEL_LINK = "https://t.me/klondike_stil"
+CHANNEL_ID = "@Emilia_debag"  # Или числовой ID канала
+CHANNEL_LINK = "https://t.me/Emilia_debag"
 # Или так (можно и двойные, но без дублирования)
 # BOT_TOKEN = '7954452949:AAFPjobmKF43QWu6oFC2szX_xTvoc9uClkk'
 
