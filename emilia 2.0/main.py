@@ -2,190 +2,183 @@ import logging
 import aiohttp
 import json
 from aiogram import Bot, Dispatcher, types
-from aiogram.dispatcher import filters
 from aiogram.utils import exceptions
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import BOT_TOKEN, CHANNEL_ID, CHANNEL_LINK
+from config import BOT_TOKEN, CHANNEL_ID, CHANNEL_LINK, SCROLLLER_API, HEADERS, CATEGORIES
 
-# Настройка логгирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class SubscriptionChecker:
+class SubscriptionManager:
     def __init__(self, bot):
         self.bot = bot
         self.cache = {}
 
-    async def check_subscription(self, user_id: int) -> bool:
-        """Проверка подписки пользователя на канал"""
+    async def verify_subscription(self, user_id: int) -> bool:
         try:
-            member = await self.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            member = await self.bot.get_chat_member(CHANNEL_ID, user_id)
             return member.status not in ['left', 'kicked']
         except exceptions.BadRequest as e:
-            logger.error(f"Ошибка проверки подписки: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Неизвестная ошибка: {e}")
+            logger.error(f"Subscription check error: {e}")
             return False
 
-    async def send_subscription_request(self, message: types.Message):
-        """Отправка сообщения с просьбой подписаться"""
+    async def request_subscription(self, message: types.Message):
         keyboard = InlineKeyboardMarkup(row_width=1)
         keyboard.add(
-            InlineKeyboardButton("👉 ПОДПИСАТЬСЯ 👈", url=CHANNEL_LINK),
-            InlineKeyboardButton("✅ Я ПОДПИСАЛСЯ", callback_data="check_sub")
+            InlineKeyboardButton("👉 ПОДПИСАТЬСЯ", url=CHANNEL_LINK),
+            InlineKeyboardButton("✅ ПРОВЕРИТЬ ПОДПИСКУ", callback_data="check_sub")
         )
         
         await message.answer(
-            "🔒 <b>Доступ ограничен</b>\n\n"
-            "Для использования бота необходимо подписаться на наш канал:\n"
-            f"{CHANNEL_LINK}\n\n"
-            "После подписки нажмите кнопку <b>✅ Я ПОДПИСАЛСЯ</b>",
+            "🔒 Для доступа требуется подписка!\n"
+            f"Канал: {CHANNEL_LINK}\n\n"
+            "После подписки нажмите кнопку проверки",
             reply_markup=keyboard,
-            parse_mode="HTML",
             disable_web_page_preview=True
         )
 
-class ImageLoader:
+class ScrolllerClient:
     def __init__(self):
-        self.session = None
-
-    async def init_session(self):
-        """Инициализация сессии"""
         self.session = aiohttp.ClientSession()
+        
+    async def fetch_content(self, subreddit: str, nsfw: bool, count: int = 5):
+        query = {
+            "query": f"""
+                query SubredditQuery($url: String!, $filter: SubredditPostFilter) {{
+                    getSubreddit(url: $url) {{
+                        children(limit: {count}, filter: $filter) {{
+                            items {{
+                                mediaSources {{ url }},
+                                title,
+                                url
+                            }}
+                        }}
+                    }}
+                }}
+            """,
+            "variables": {
+                "url": f"/r/{subreddit}",
+                "filter": {"nsfw": nsfw}
+            }
+        }
 
-    async def close_session(self):
-        """Закрытие сессии"""
-        if self.session:
-            await self.session.close()
-
-    async def get_waifu_image(self, category: str):
-        """Получение случайного изображения от waifu.pics"""
         try:
-            async with self.session.get(f"https://api.waifu.pics/{category}/waifu") as response:
+            async with self.session.post(
+                SCROLLLER_API,
+                headers=HEADERS,
+                data=json.dumps(query)
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return data.get('url')
+                    return self.parse_content(data)
+                logger.error(f"API Error: {response.status}")
         except Exception as e:
-            logger.error(f"Ошибка при получении изображения: {e}")
+            logger.error(f"Scrolller error: {e}")
         return None
+
+    @staticmethod
+    def parse_content(data: dict) -> list:
+        items = data.get('data', {}).get('getSubreddit', {}).get('children', {}).get('items', [])
+        return [
+            {
+                "media": [m['url'] for m in item.get('mediaSources', [])],
+                "title": item.get('title', ''),
+                "url": item.get('url', '')
+            } for item in items if item.get('mediaSources')
+        ]
 
 class AnimeBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.dp = Dispatcher(self.bot)
-        self.sub_checker = SubscriptionChecker(self.bot)
-        self.image_loader = ImageLoader()
-        self.nsfw_enabled = False
+        self.sub_manager = SubscriptionManager(self.bot)
+        self.scrolller = ScrolllerClient()
+        self.current_mode = "sfw"
 
-    async def on_startup(self, dispatcher):
-        await self.image_loader.init_session()
-        logger.info("Бот запущен")
+    async def shutdown(self, _):
+        await self.scrolller.session.close()
+        logger.info("Bot stopped")
 
-    async def on_shutdown(self, dispatcher):
-        await self.image_loader.close_session()
-        logger.info("Бот остановлен")
-
-    async def is_subscribed(self, message: types.Message) -> bool:
-        """Проверка подписки"""
-        if not await self.sub_checker.check_subscription(message.from_user.id):
-            await self.sub_checker.send_subscription_request(message)
-            return False
-        return True
-
-    def get_main_menu(self):
-        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        buttons = [
-            "🎲 Случайное изображение",
-            "🔞 Включить NSFW" if not self.nsfw_enabled else "🔞 Выключить NSFW",
-            "🔄 Обновить меню"
-        ]
-        keyboard.add(*buttons)
+    def create_menu(self):
+        keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        current_cat = CATEGORIES[self.current_mode]
+        
+        # Добавляем кнопки для субреддитов
+        for sub in current_cat['subreddits']:
+            keyboard.add(types.KeyboardButton(f"/{sub}"))
+            
+        # Кнопки управления
+        mode_button = "🔞 NSFW" if self.current_mode == "sfw" else "🔒 SFW"
+        keyboard.add(
+            types.KeyboardButton(mode_button),
+            types.KeyboardButton("🔄 Обновить")
+        )
         return keyboard
 
-    async def send_random_image(self, message: types.Message):
-        """Отправка случайного изображения"""
-        loading_msg = await message.answer("🔄 Загружаю изображение...")
-        
-        category = "nsfw" if self.nsfw_enabled else "sfw"
-        image_url = await self.image_loader.get_waifu_image(category)
-        
-        if image_url:
-            try:
-                await message.answer_photo(
-                    photo=image_url,
-                    caption=f"Случайное аниме изображение\n"
-                           f"🔞 NSFW: {'Да' if self.nsfw_enabled else 'Нет'}",
-                    reply_markup=self.get_main_menu()
-                )
-                await loading_msg.delete()
-            except Exception as e:
-                logger.error(f"Ошибка отправки изображения: {e}")
-                await loading_msg.edit_text("⚠ Ошибка при отправке изображения")
-        else:
-            await loading_msg.edit_text("⚠ Не удалось загрузить изображение")
+    async def send_media(self, message: types.Message, subreddit: str):
+        if not await self.sub_manager.verify_subscription(message.from_user.id):
+            await self.sub_manager.request_subscription(message)
+            return
+
+        loading_msg = await message.answer("🔄 Загрузка контента...")
+        content = await self.scrolller.fetch_content(
+            subreddit=subreddit,
+            nsfw=CATEGORIES[self.current_mode]['nsfw']
+        )
+
+        if not content:
+            await loading_msg.edit_text("⚠ Ошибка загрузки")
+            return
+
+        try:
+            media = content[0]['media'][0]
+            await message.answer_photo(
+                photo=media,
+                caption=f"🎴 {content[0]['title']}\n🔗 {content[0]['url']}",
+                reply_markup=self.create_menu()
+            )
+            await loading_msg.delete()
+        except Exception as e:
+            logger.error(f"Send media error: {e}")
+            await loading_msg.edit_text("⚠ Ошибка отправки")
 
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
-        async def cmd_start(message: types.Message):
-            if not await self.is_subscribed(message):
-                return
-            await message.answer(
-                "🎌 Добро пожаловать в аниме бот!\n"
-                "👇 Выберите действие:",
-                reply_markup=self.get_main_menu()
-            )
-
-        @self.dp.message_handler(lambda m: m.text == "🎲 Случайное изображение")
-        async def random_image_handler(message: types.Message):
-            if not await self.is_subscribed(message):
-                return
-            await self.send_random_image(message)
-
-        @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
-        async def toggle_nsfw(message: types.Message):
-            if not await self.is_subscribed(message):
-                return
-            self.nsfw_enabled = not self.nsfw_enabled
-            status = "включен" if self.nsfw_enabled else "выключен"
-            await message.answer(
-                f"🔞 NSFW режим {status}",
-                reply_markup=self.get_main_menu()
-            )
-
-        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить меню")
-        async def refresh_menu(message: types.Message):
-            await cmd_start(message)
+        async def start_handler(message: types.Message):
+            if await self.sub_manager.verify_subscription(message.from_user.id):
+                await message.answer("Выберите категорию:", reply_markup=self.create_menu())
+            else:
+                await self.sub_manager.request_subscription(message)
 
         @self.dp.callback_query_handler(text="check_sub")
         async def check_sub_callback(call: types.CallbackQuery):
-            if await self.sub_checker.check_subscription(call.from_user.id):
+            if await self.sub_manager.verify_subscription(call.from_user.id):
                 await call.message.delete()
-                await call.message.answer(
-                    "✅ <b>Подписка подтверждена!</b>\n"
-                    "Теперь вы можете использовать бота.",
-                    reply_markup=self.get_main_menu(),
-                    parse_mode="HTML"
-                )
+                await call.message.answer("Доступ разрешен!", reply_markup=self.create_menu())
             else:
-                await call.answer(
-                    "❌ Вы не подписаны на канал!",
-                    show_alert=True
-                )
+                await call.answer("❌ Подписка не обнаружена!", show_alert=True)
 
-    def run(self):
-        self.register_handlers()
-        from aiogram import executor
-        executor.start_polling(
-            self.dp,
-            on_startup=self.on_startup,
-            on_shutdown=self.on_shutdown,
-            skip_updates=True
-        )
+        @self.dp.message_handler(lambda m: m.text in ["🔞 NSFW", "🔒 SFW"])
+        async def toggle_mode(message: types.Message):
+            self.current_mode = "nsfw" if self.current_mode == "sfw" else "sfw"
+            await message.answer(f"Режим: {CATEGORIES[self.current_mode]['name']}", reply_markup=self.create_menu())
+
+        @self.dp.message_handler(lambda m: m.text.startswith('/'))
+        async def subreddit_handler(message: types.Message):
+            subreddit = message.text[1:]
+            if subreddit in CATEGORIES[self.current_mode]['subreddits']:
+                await self.send_media(message, subreddit)
+            else:
+                await message.answer("⚠ Неизвестная категория!")
+
+        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить")
+        async def refresh_handler(message: types.Message):
+            await start_handler(message)
 
 if __name__ == '__main__':
     bot = AnimeBot()
-    bot.run()
+    bot.dp.register_message_handler(bot.refresh_handler)
+    executor.start_polling(bot.dp, on_shutdown=bot.shutdown, skip_updates=True)
