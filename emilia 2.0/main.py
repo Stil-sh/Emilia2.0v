@@ -50,8 +50,11 @@ class SubscriptionChecker:
         keyboard.add(InlineKeyboardButton("✅ Я подписался", callback_data="check_sub"))
         
         await message.answer(
-            "📛 Для доступа к боту подпишитесь на наш канал!\n"
-            "После подписки нажмите кнопку ниже:",
+            "📛 Для использования бота необходимо подписаться на наш канал!\n"
+            "➖➖➖➖➖➖➖➖➖\n"
+            f"Канал: {CHANNEL_LINK}\n"
+            "➖➖➖➖➖➖➖➖➖\n"
+            "После подписки нажмите кнопку '✅ Я подписался'",
             reply_markup=keyboard,
             disable_web_page_preview=True
         )
@@ -72,6 +75,13 @@ class AnimeBot:
     async def on_shutdown(self, dispatcher):
         await self.session.close()
         logger.info("Бот остановлен")
+
+    async def check_and_request_subscription(self, message: types.Message):
+        """Проверка подписки и отправка запроса если не подписан"""
+        if not await self.sub_checker.check_subscription(message.from_user.id):
+            await self.sub_checker.send_subscription_request(message)
+            return False
+        return True
 
     def get_main_menu(self):
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -107,19 +117,17 @@ class AnimeBot:
     def register_handlers(self):
         @self.dp.message_handler(commands=['start', 'menu'])
         async def cmd_start(message: types.Message):
-            # Проверка подписки перед выполнением команды
-            if not await self.sub_checker.check_subscription(message.from_user.id):
-                await self.sub_checker.send_subscription_request(message)
+            if not await self.check_and_request_subscription(message):
                 return
                 
             await message.answer(
-                "🎌 Добро пожаловать!\nВыберите жанр:",
+                "🎌 Добро пожаловать в бота!\n"
+                "👇 Выберите жанр из меню ниже:",
                 reply_markup=self.get_main_menu()
             )
 
         @self.dp.callback_query_handler(text="check_sub")
         async def check_sub_callback(call: types.CallbackQuery):
-            # Проверка подписки при нажатии кнопки "Я подписался"
             if await self.sub_checker.check_subscription(call.from_user.id):
                 await call.message.delete()
                 await call.message.answer(
@@ -127,42 +135,34 @@ class AnimeBot:
                     reply_markup=self.get_main_menu()
                 )
             else:
-                await call.answer("❌ Вы ещё не подписались!", show_alert=True)
+                await call.answer("❌ Вы ещё не подписались на канал! Пожалуйста, подпишитесь и нажмите кнопку снова.", show_alert=True)
 
         @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
         async def toggle_nsfw(message: types.Message):
-            # Проверка подписки перед изменением режима NSFW
-            if not await self.sub_checker.check_subscription(message.from_user.id):
-                await self.sub_checker.send_subscription_request(message)
+            if not await self.check_and_request_subscription(message):
                 return
                 
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
             await message.answer(
-                f"NSFW режим {status}",
+                f"🔞 NSFW режим {status}",
                 reply_markup=self.get_main_menu()
             )
 
         @self.dp.message_handler(lambda m: m.text == "🔄 Обновить")
         async def refresh_menu(message: types.Message):
-            # Проверка подписки перед обновлением меню
-            if not await self.sub_checker.check_subscription(message.from_user.id):
-                await self.sub_checker.send_subscription_request(message)
-                return
             await cmd_start(message)
 
         @self.dp.message_handler()
         async def handle_genre(message: types.Message):
-            # Проверка подписки перед обработкой жанра
-            if not await self.sub_checker.check_subscription(message.from_user.id):
-                await self.sub_checker.send_subscription_request(message)
+            if not await self.check_and_request_subscription(message):
                 return
                 
             genres = self.nsfw_genres if self.nsfw_enabled else self.sfw_genres
             genre = message.text.lower()
             
             if genre not in [g.lower() for g in genres]:
-                await message.answer("⚠ Выберите жанр из меню")
+                await message.answer("⚠ Пожалуйста, выберите жанр из меню ниже")
                 return
                 
             sent_message = await message.answer("🔄 Загружаю изображение...")
@@ -173,13 +173,14 @@ class AnimeBot:
                 try:
                     await message.answer_photo(
                         image_url,
-                        caption=f"Ваш {genre} арт! (NSFW: {'да' if self.nsfw_enabled else 'нет'})",
+                        caption=f"🎨 Ваш {genre} арт\n"
+                               f"🔞 NSFW: {'включен' if self.nsfw_enabled else 'выключен'}",
                         reply_markup=self.get_main_menu()
                     )
                     await sent_message.delete()
                 except Exception as e:
                     logger.error(f"Ошибка при отправке изображения: {e}")
-                    await message.answer("⚠ Не удалось загрузить изображение")
+                    await message.answer("⚠ Не удалось загрузить изображение, попробуйте позже")
             else:
                 await message.answer("⚠ Произошла ошибка при загрузке изображения")
 
