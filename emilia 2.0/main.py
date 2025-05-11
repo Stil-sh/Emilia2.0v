@@ -1,10 +1,9 @@
 import logging
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.dispatcher import FSMContext
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram import Bot, Dispatcher, types
+from aiogram.dispatcher import Dispatcher
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import (BotNotInChat, ChatNotFound, 
-                                    TelegramAPIError, Unauthorized)
+from aiogram.utils.exceptions import (ChatNotFound, BadRequest, 
+                                   TelegramAPIError, Unauthorized)
 from config import BOT_TOKEN, CHANNEL_ID, CHANNEL_LINK
 
 # Настройка логгирования
@@ -30,8 +29,12 @@ class SubscriptionChecker:
             self.cache[user_id] = result
             return result
             
-        except (BotNotInChat, ChatNotFound):
-            logger.error("Бот не админ или канал не найден!")
+        except BadRequest as e:
+            if "bot is not a member" in str(e).lower():
+                logger.error("Бот не является участником канала!")
+            return True
+        except ChatNotFound:
+            logger.error("Канал не найден!")
             return True
         except Unauthorized:
             logger.error("Бот заблокирован пользователем")
@@ -55,18 +58,17 @@ class SubscriptionChecker:
 
 class AnimeBot:
     def __init__(self):
-        self.bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
-        self.storage = MemoryStorage()
-        self.dp = Dispatcher(self.bot, storage=self.storage)
+        self.bot = Bot(token=BOT_TOKEN)
+        self.dp = Dispatcher()
         self.sub_checker = SubscriptionChecker(self.bot)
         self.sfw_genres = ["waifu", "neko", "shinobu", "megumin"]
         self.nsfw_genres = ["waifu", "neko", "trap"]
         self.nsfw_enabled = False
 
-    async def on_startup(self, dp):
+    async def on_startup(self):
         logger.info("Бот запущен")
 
-    async def on_shutdown(self, dp):
+    async def on_shutdown(self):
         logger.info("Бот остановлен")
 
     def get_main_menu(self):
@@ -83,7 +85,7 @@ class AnimeBot:
         return keyboard
 
     def register_handlers(self):
-        @self.dp.message_handler(commands=['start', 'menu'])
+        @self.dp.message(commands=['start', 'menu'])
         async def cmd_start(message: types.Message):
             if not await self.sub_checker.check_subscription(message.from_user.id):
                 await self.sub_checker.send_subscription_request(message)
@@ -94,15 +96,18 @@ class AnimeBot:
                 reply_markup=self.get_main_menu()
             )
 
-        @self.dp.callback_query_handler(text="check_sub")
+        @self.dp.callback_query(lambda c: c.data == "check_sub")
         async def check_sub_callback(call: types.CallbackQuery):
             if await self.sub_checker.check_subscription(call.from_user.id):
                 await call.message.delete()
-                await cmd_start(call.message)
+                await call.message.answer(
+                    "✅ Спасибо за подписку! Теперь вы можете использовать бота.",
+                    reply_markup=self.get_main_menu()
+                )
             else:
                 await call.answer("❌ Вы ещё не подписались!", show_alert=True)
 
-        @self.dp.message_handler(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
+        @self.dp.message(lambda m: m.text in ["🔞 Включить NSFW", "🔞 Выключить NSFW"])
         async def toggle_nsfw(message: types.Message):
             self.nsfw_enabled = not self.nsfw_enabled
             status = "включен" if self.nsfw_enabled else "выключен"
@@ -111,11 +116,11 @@ class AnimeBot:
                 reply_markup=self.get_main_menu()
             )
 
-        @self.dp.message_handler(lambda m: m.text == "🔄 Обновить")
+        @self.dp.message(lambda m: m.text == "🔄 Обновить")
         async def refresh_menu(message: types.Message):
             await cmd_start(message)
 
-        @self.dp.message_handler()
+        @self.dp.message()
         async def handle_genre(message: types.Message):
             if not await self.sub_checker.check_subscription(message.from_user.id):
                 await self.sub_checker.send_subscription_request(message)
@@ -131,15 +136,13 @@ class AnimeBot:
             await message.answer("🔄 Загружаю изображение...")
             # Здесь должна быть логика загрузки изображения
 
-    def run(self):
+    async def run(self):
+        await self.on_startup()
         self.register_handlers()
-        executor.start_polling(
-            self.dp,
-            on_startup=self.on_startup,
-            on_shutdown=self.on_shutdown,
-            skip_updates=True
-        )
+        await self.dp.start_polling(self.bot)
+        await self.on_shutdown()
 
 if __name__ == '__main__':
     bot = AnimeBot()
-    bot.run()
+    import asyncio
+    asyncio.run(bot.run())
