@@ -5,39 +5,26 @@ CHANNEL_LINK = "https://t.me/Emilia_debag"
 USER_CATEGORIES = {
     "Безопасный контент 🔒": {
         "Подкатегории": {
-            "Геншин Импакт 🌸": ["GenshinImpact"],
-            "Хонкай: Звёздный путь 🚂": ["HonkaiStarRail"],
-            "Ре:Зеро ⏳": ["Re_Zero"],
-            "Неко-девушки 🐾": ["awwnime", "neko"],
-            "Аниме-обои 🖼️": ["AnimeWallpaper"]
+            "Популярные аниме 🎌": ["awwnime", "AnimeART"],
+            "Обои 🖼️": ["AnimeWallpaper", "AnimeWallpapersSFW"]
         },
         "nsfw": False
     },
     "Взрослый контент 🔞": {
         "Подкатегории": {
-            "Лоликон 🍭": ["lolicon"],
-            "Юри 🌸": ["yuri"],
-            "Трапы 🎎": ["traphentai"],
-            "Яой 🌈": ["yaoi"],
-            "Эротические арты 🍑": ["ecchi", "AnimeBooty"]
+            "Эротика 🔥": ["AnimeBikinis", "AnimeFeet"],
+            "Арты 🌸": ["AnimeArt"]
         },
         "nsfw": True
     }
 }
 
 SCROLLLER_MAPPING = {
-    # SFW
-    "GenshinImpact": "Genshin_Impact",
-    "HonkaiStarRail": "HonkaiStarRail",
-    "Re_Zero": "Re_Zero",
-    "neko": "neko",
+    "awwnime": "awwnime",
+    "AnimeART": "AnimeART",
     "AnimeWallpaper": "AnimeWallpaper",
-    
-    # NSFW
-    "lolicon": "loliconnsfw",
-    "yuri": "yuri",
-    "traphentai": "traphentai",
-    "yaoi": "yaoi",
-    "ecchi": "ecchi",
-    "AnimeBooty": "AnimeBooty"
+    "AnimeWallpapersSFW": "AnimeWallpapersSFW",
+    "AnimeBikinis": "AnimeBikinis",
+    "AnimeFeet": "AnimeFeet",
+    "AnimeArt": "AnimeArt"
 }
